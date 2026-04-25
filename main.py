@@ -164,12 +164,18 @@ async def login(login_data: UserLogin):
 
     response = supabase.table("users").select("*").eq("email", login_data.email).execute()
     user = response.data[0] if response.data else None
-
     if not user or not verify_password(login_data.password, user["password"]):
         raise HTTPException(status_code=401, detail="Email atau password salah")
 
+    user.pop("password", None)
     access_token = create_access_token(data={"sub": user["email"], "username": user["username"]})
-    return format_response(True, "Login berhasil", {"access_token": access_token, "token_type": "bearer"})
+    return format_response(
+        True, 
+        "Login berhasil", 
+        {"access_token": access_token, 
+         "token_type": "bearer",
+         "user": user
+         })
 
 
 # --- USER ---
