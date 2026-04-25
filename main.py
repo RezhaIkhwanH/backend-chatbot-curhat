@@ -2,7 +2,8 @@ import os
 from datetime import datetime, timedelta
 from typing import Optional
 
-from fastapi import FastAPI, HTTPException, Depends, status
+from fastapi import FastAPI, HTTPException, Depends, status,Request 
+from fastapi.responses import JSONResponse
 from fastapi.security import OAuth2PasswordBearer
 from fastapi.middleware.cors import CORSMiddleware
 from jose import JWTError, jwt
@@ -32,6 +33,31 @@ app.add_middleware(
     allow_methods=["*"],  
     allow_headers=["*"],
 )
+
+
+# --- GLOBAL EXCEPTION HANDLER (Standar Response Error) ---
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request: Request, exc: HTTPException):
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"success": False, "message": exc.detail, "data": {}, "codeStatus": exc.status_code}
+    )
+
+@app.exception_handler(Exception)
+async def general_exception_handler(request: Request, exc: Exception):
+    return JSONResponse(
+        status_code=500,
+        content={"success": False, "message": "Terjadi kesalahan pada server", "data": {}, "codeStatus": 500}
+    )
+
+# --- STANDAR RESPONSE HELPER ---
+def format_response(success: bool, message: str, data: any = None, codeStatus: int = 200):
+    return {
+        "success": success,
+        "message": message,
+        "data": data if data is not None else {},
+        "codeStatus": codeStatus
+    }
 
 # --- SCHEMAS ---
 class UserRegister(BaseModel):
@@ -127,12 +153,12 @@ async def register(user: UserRegister):
     
     try:
         supabase.table("users").insert(new_user_data).execute()
-        return {"message": "Registrasi berhasil!"}
+        return format_response(True, "Registrasi berhasil!", None, 201)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Database Error: {str(e)}")
 
 
-@app.post("/login", response_model=Token, tags=["Auth"])
+@app.post("/login", tags=["Auth"])
 async def login(login_data: UserLogin):
     """ endpoint untuk login hasil token JWT untuk autentikasi"""
 
@@ -143,7 +169,7 @@ async def login(login_data: UserLogin):
         raise HTTPException(status_code=401, detail="Email atau password salah")
 
     access_token = create_access_token(data={"sub": user["email"], "username": user["username"]})
-    return {"access_token": access_token, "token_type": "bearer"}
+    return format_response(True, "Login berhasil", {"access_token": access_token, "token_type": "bearer"})
 
 
 # --- USER ---
@@ -152,8 +178,11 @@ async def login(login_data: UserLogin):
 async def read_users_me(current_user: dict = Depends(get_current_user)):
     """get profile user login."""
 
-    current_user.pop("password", None)
-    return current_user
+    try:
+        current_user.pop("password", None)
+        return format_response(True, "Profil user", current_user)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Gagal mengambil profil: {str(e)}")
 
 
 @app.put("/update-profile", tags=["User"])
@@ -179,11 +208,12 @@ async def update_user_profile(
         update_dict["password"] = get_password_hash(update_data.password)
 
     if not update_dict:
-        return {"message": "Tidak ada data yang diupdate"}
+        return format_response(True, "Tidak ada data yang diupdate")
 
     try:
-        supabase.table("users").update(update_dict).eq("id", current_user["id"]).execute()
-        return {"message": "Profil berhasil diperbarui", "updated_fields": list(update_dict.keys())}
+        data = supabase.table("users").update(update_dict).eq("id", current_user["id"]).execute()
+        data.data[0].pop("password", None)
+        return format_response(True, "Profil berhasil diperbarui", data.data[0])
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Update gagal: {str(e)}")
 
@@ -193,7 +223,7 @@ async def delete_account(current_user: dict = Depends(get_current_user)):
     """Endpoint untuk menghapus akun"""
     try:
         supabase.table("users").delete().eq("id", current_user["id"]).execute()
-        return {"message": "Akun berhasil dihapus"}
+        return format_response(True,"akun berhasil di hapus")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Delete gagal: {str(e)}")
     
@@ -233,20 +263,22 @@ async def get_chat_history(
                     "content": msg.content
                 })
 
-            return {
-                "message": "Berhasil mengambil chat history",
-                "data": formatted_messages
-            }
+            return format_response(
+                True,
+                "berhasil mengambil chat history",
+                formatted_messages
+            )
+            
 
-        return {
-            "message": "Tidak ada chat history",
-            "data": []
-        }
+        return format_response(
+                True,
+                "tidak ada chat history"
+            )
 
     except Exception as e:
         raise HTTPException(
             status_code=500,
-            detail=f"Gagal mengambil history: {str(e)}"
+            detail=str(e)
         )
 
 
@@ -255,7 +287,7 @@ async def get_rooms(current_user: dict = Depends(get_current_user)):
     """Endpoint untuk mendapatkan daftar ruangan chat milik user"""
     try:
         response = supabase.table("rooms").select("*").eq("user_id", current_user["id"]).execute()
-        return {"rooms": response.data}
+        return format_response(True, "Daftar ruangan berhasil di ambil", response.data)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Gagal mengambil ruangan: {str(e)}")
 
@@ -281,9 +313,7 @@ async def send_message(chatReq: ChatRequest, current_user: dict = Depends(get_cu
             thread_id=f"room_{chatReq.id_room}_user_{current_user['id']}"
         ) 
 
-        return {
-            "message": response_model["messages"][-1].content 
-        }
+        return format_response(True, "Respon AI", {"message": response_model["messages"][-1].content})
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error saat memproses chat: {str(e)}")
 
@@ -296,7 +326,7 @@ async def add_room(room_data: RoomRequest, current_user: dict = Depends(get_curr
             "title": room_data.name,
             "user_id": current_user["id"]
         }).execute()
-        return {"message": "Ruangan berhasil ditambahkan", "data": data.data}
+        return format_response(True, "Ruangan berhasil ditambahkan", data.data[0], 201)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Gagal menambahkan ruangan: {str(e)}")
 
@@ -307,6 +337,6 @@ async def delete_room(room_id: int, current_user: dict = Depends(get_current_use
     try:
         supabase.table("rooms").delete().eq("id", room_id).eq("user_id", current_user["id"]).execute()
         delete_thread_history(f"room_{room_id}_user_{current_user['id']}")
-        return {"message": "Ruangan berhasil dihapus"}
+        return format_response(True, "Ruangan berhasil dihapus")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Gagal menghapus ruangan: {str(e)}")
